@@ -138,6 +138,9 @@ static const KeyEntry    s_controlKeys[] = {
 //   場所: 環境変数 INPUTLEAP_OSX_KEYMAP、無ければ ~/.config/input-leap/osx-keymap.conf
 //   書式: <Input Leap のキー名> = <macOS の仮想キーコード（10進または 0x 付き16進）>
 //         例) Henkan = 104      # 変換 → かな
+//         KeyboardType = 48     # 記号の位置を計算するときのキーボードの種類（40=US、48 など=日本語）
+//   KeyboardType を書かなければ、起動時の LMGetKbdType() を使う（元の動作）。
+//   起動時に US 配列と判断されて、日本語配列の Mac で記号がずれることがあるため指定できるようにした
 //   # から行末まではコメント
 static std::string trimmed(const std::string& s)
 {
@@ -148,6 +151,9 @@ static std::string trimmed(const std::string& s)
     }
     return s.substr(b, s.find_last_not_of(ws) - b + 1);
 }
+
+static long s_keyboardTypeOverride = -1;  // 設定ファイルの KeyboardType。-1 なら指定なし
+static const std::vector<KeyEntry>& controlKeys();
 
 static std::vector<KeyEntry> loadExtraKeyEntries()
 {
@@ -181,6 +187,17 @@ static std::vector<KeyEntry> loadExtraKeyEntries()
         }
         std::string name = trimmed(line.substr(0, eq));
         std::string value = trimmed(line.substr(eq + 1));
+        if (name == "KeyboardType") {
+            char* kend = nullptr;
+            long t = std::strtol(value.c_str(), &kend, 0);
+            if (value.empty() || *kend != '\0' || t < 0 || t > 0xffff) {
+                LOG_WARN("osx keymap %s:%d: KeyboardType '%s' が不正です", path.c_str(), lineNo, value.c_str());
+            } else {
+                s_keyboardTypeOverride = t;
+                LOG_INFO("osx keymap: KeyboardType = %ld", t);
+            }
+            continue;
+        }
         KeyID id;
         if (!inputleap::KeyMap::parseKey(name, id)) {
             LOG_WARN("osx keymap %s:%d: キー名 '%s' が分かりません", path.c_str(), lineNo, name.c_str());
@@ -196,6 +213,13 @@ static std::vector<KeyEntry> loadExtraKeyEntries()
         LOG_INFO("osx keymap: %s -> 仮想キーコード %lu", name.c_str(), vk);
     }
     return out;
+}
+
+// 記号の位置を計算するときのキーボードの種類。設定ファイルで指定があればそれを使う
+static std::uint32_t keyboardTypeForLayout()
+{
+    controlKeys();  // 設定ファイルをまだ読んでいなければ読む
+    return s_keyboardTypeOverride >= 0 ? static_cast<std::uint32_t>(s_keyboardTypeOverride) : LMGetKbdType();
 }
 
 // 設定ファイルの対応 → 組み込みの対応（設定ファイルで上書きしたキーは除く）の順
@@ -387,7 +411,7 @@ OSXKeyState::mapKeyFromEvent(KeyIDs& ids,
         OSStatus status = UCKeyTranslate(layout,
                             vkCode & 0xffu, action,
                             (modifiers >> 8) & 0xffu,
-                            LMGetKbdType(), 0, &m_deadKeyState,
+                            keyboardTypeForLayout(), 0, &m_deadKeyState,
                             sizeof(chars) / sizeof(chars[0]), &count, chars);
 
         // get the characters
@@ -525,7 +549,7 @@ OSXKeyState::getKeyMap(inputleap::KeyMap& keyMap)
         }
     }
 
-    std::uint32_t keyboardType = LMGetKbdType();
+    std::uint32_t keyboardType = keyboardTypeForLayout();
     for (std::int32_t g = 0, n = (std::int32_t)m_groups.size(); g < n; ++g) {
         // add special keys
         getKeyMapForSpecialKeys(keyMap, g);

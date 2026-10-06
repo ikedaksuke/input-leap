@@ -140,7 +140,10 @@ static const KeyEntry    s_controlKeys[] = {
 //         例) Henkan = 104      # 変換 → かな
 //         KeyboardType = 48     # 記号の位置を計算するときのキーボードの種類（40=US、48 など=日本語）
 //   KeyboardType を書かなければ、起動時の LMGetKbdType() を使う（元の動作）。
-//   起動時に US 配列と判断されて、日本語配列の Mac で記号がずれることがあるため指定できるようにした
+//   起動時に US 配列と判断されて、日本語配列の Mac で記号がずれることがあるため指定できるようにした。
+//   指定した値は送るキーイベントにも付ける。ABC/US 配列のデータには日本語キーボード（48 など）用の
+//   記号表が無く、Input Leap は US の表で位置を計算するため、日本語配列の Mac では 40 を指定すると
+//   計算と macOS の解釈が揃う
 //   # から行末まではコメント
 static std::string trimmed(const std::string& s)
 {
@@ -617,6 +620,9 @@ void OSXKeyState::postHIDVirtualKey(const std::uint8_t virtualKeyCode, const boo
     std::uint32_t modifiersDelta = 0;
 
     bzero(&event, sizeof(NXEventData));
+    if (s_keyboardTypeOverride >= 0) {
+        event.key.keyboardType = static_cast<UInt32>(s_keyboardTypeOverride);
+    }
 
     switch (virtualKeyCode)
     {

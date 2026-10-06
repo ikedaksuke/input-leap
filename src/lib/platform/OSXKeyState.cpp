@@ -23,6 +23,11 @@
 #include "base/Log.h"
 
 #include <Carbon/Carbon.h>
+#include <cstdlib>
+#include <fstream>
+#include <set>
+#include <string>
+#include <vector>
 #include <CoreServices/CoreServices.h>
 #include <IOKit/hidsystem/IOHIDLib.h>
 
@@ -125,6 +130,93 @@ static const KeyEntry    s_controlKeys[] = {
 };
 
 
+// 追加の対応表（JIS キーボード向けの拡張）
+//
+// 組み込みの s_controlKeys に無いキー（変換など）を、設定ファイルで足せるようにする。
+// 書いたキーは組み込みの対応より優先する。読むのは起動時の1回だけ。
+//
+//   場所: 環境変数 INPUTLEAP_OSX_KEYMAP、無ければ ~/.config/input-leap/osx-keymap.conf
+//   書式: <Input Leap のキー名> = <macOS の仮想キーコード（10進または 0x 付き16進）>
+//         例) Henkan = 104      # 変換 → かな
+//   # から行末まではコメント
+static std::string trimmed(const std::string& s)
+{
+    const char* ws = " \t\r\n";
+    std::string::size_type b = s.find_first_not_of(ws);
+    if (b == std::string::npos) {
+        return "";
+    }
+    return s.substr(b, s.find_last_not_of(ws) - b + 1);
+}
+
+static std::vector<KeyEntry> loadExtraKeyEntries()
+{
+    std::vector<KeyEntry> out;
+    std::string path;
+    if (const char* env = std::getenv("INPUTLEAP_OSX_KEYMAP")) {
+        path = env;
+    } else if (const char* home = std::getenv("HOME")) {
+        path = std::string(home) + "/.config/input-leap/osx-keymap.conf";
+    }
+    std::ifstream in(path);
+    if (path.empty() || !in) {
+        return out;
+    }
+    std::string line;
+    int lineNo = 0;
+    while (std::getline(in, line)) {
+        ++lineNo;
+        std::string::size_type hash = line.find('#');
+        if (hash != std::string::npos) {
+            line.erase(hash);
+        }
+        line = trimmed(line);
+        if (line.empty()) {
+            continue;
+        }
+        std::string::size_type eq = line.find('=');
+        if (eq == std::string::npos) {
+            LOG_WARN("osx keymap %s:%d: '=' がありません", path.c_str(), lineNo);
+            continue;
+        }
+        std::string name = trimmed(line.substr(0, eq));
+        std::string value = trimmed(line.substr(eq + 1));
+        KeyID id;
+        if (!inputleap::KeyMap::parseKey(name, id)) {
+            LOG_WARN("osx keymap %s:%d: キー名 '%s' が分かりません", path.c_str(), lineNo, name.c_str());
+            continue;
+        }
+        char* end = nullptr;
+        unsigned long vk = std::strtoul(value.c_str(), &end, 0);
+        if (value.empty() || *end != '\0' || vk > 0xff) {
+            LOG_WARN("osx keymap %s:%d: キーコード '%s' が不正です", path.c_str(), lineNo, value.c_str());
+            continue;
+        }
+        out.push_back({ id, static_cast<std::uint32_t>(vk) });
+        LOG_INFO("osx keymap: %s -> 仮想キーコード %lu", name.c_str(), vk);
+    }
+    return out;
+}
+
+// 設定ファイルの対応 → 組み込みの対応（設定ファイルで上書きしたキーは除く）の順
+static const std::vector<KeyEntry>& controlKeys()
+{
+    static const std::vector<KeyEntry> keys = [] {
+        std::vector<KeyEntry> all = loadExtraKeyEntries();
+        std::set<KeyID> overridden;
+        for (const KeyEntry& e : all) {
+            overridden.insert(e.m_keyID);
+        }
+        for (const KeyEntry& e : s_controlKeys) {
+            if (overridden.count(e.m_keyID) == 0) {
+                all.push_back(e);
+            }
+        }
+        return all;
+    }();
+    return keys;
+}
+
 //
 // OSXKeyState
 //
@@ -156,11 +248,8 @@ OSXKeyState::init()
     m_capsPressed = false;
 
     // build virtual key map
-    for (size_t i = 0; i < sizeof(s_controlKeys) / sizeof(s_controlKeys[0]);
-        ++i) {
-
-        m_virtualKeyMap[s_controlKeys[i].m_virtualKey] =
-            s_controlKeys[i].m_keyID;
+    for (const KeyEntry& entry : controlKeys()) {
+        m_virtualKeyMap[entry.m_virtualKey] = entry.m_keyID;
     }
 }
 
@@ -622,9 +711,7 @@ void OSXKeyState::getKeyMapForSpecialKeys(inputleap::KeyMap& keyMap, std::int32_
 {
     // special keys are insensitive to modifers and none are dead keys
     inputleap::KeyMap::KeyItem item;
-    for (size_t i = 0; i < sizeof(s_controlKeys) /
-                                sizeof(s_controlKeys[0]); ++i) {
-        const KeyEntry& entry = s_controlKeys[i];
+    for (const KeyEntry& entry : controlKeys()) {
         item.m_id        = entry.m_keyID;
         item.m_group     = group;
         item.m_button    = mapVirtualKeyToKeyButton(entry.m_virtualKey);

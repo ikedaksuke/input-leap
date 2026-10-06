@@ -36,10 +36,13 @@ OSXUchrKeyResource::OSXUchrKeyResource(const void* resource, std::uint32_t keybo
     // find the keyboard info for the current keyboard type
     const UCKeyboardTypeHeader* th = nullptr;
     const UCKeyboardLayout* r = m_resource;
+    m_keyboardType = keyboardType;
+    m_useTranslate = true;
     for (ItemCount i = 0; i < r->keyboardTypeCount; ++i) {
         if (keyboardType >= r->keyboardTypeList[i].keyboardTypeFirst &&
             keyboardType <= r->keyboardTypeList[i].keyboardTypeLast) {
             th = r->keyboardTypeList + i;
+            m_useTranslate = false;
             break;
         }
         if (r->keyboardTypeList[i].keyboardTypeFirst == 0) {
@@ -67,6 +70,18 @@ OSXUchrKeyResource::OSXUchrKeyResource(const void* resource, std::uint32_t keybo
     if (th->keyStateTerminatorsOffset != 0) {
         m_st = reinterpret_cast<const UCKeyStateTerminators*>(base +
                                 th->keyStateTerminatorsOffset);
+    }
+
+    if (m_useTranslate) {
+        m_tableModifiers.assign(m_cti->keyToCharTableCount, 0);
+        std::vector<bool> seen(m_cti->keyToCharTableCount, false);
+        for (std::uint32_t mask = 0; mask < m_m->modifiersCount; ++mask) {
+            std::uint32_t t = m_m->tableNum[mask];
+            if (t < seen.size() && !seen[t]) {
+                seen[t] = true;
+                m_tableModifiers[t] = mask;
+            }
+        }
     }
 
     // find the space key, but only if it can combine with dead keys.
@@ -133,6 +148,20 @@ KeyID OSXUchrKeyResource::getKey(std::uint32_t table, std::uint32_t button) cons
                                 m_cti->keyToCharTableOffsets[table]);
 
   const UCKeyOutput c = cPtr[button];
+
+    // デッドキー以外は macOS と同じ計算で文字を求める（m_useTranslate の説明はヘッダー）
+    if (m_useTranslate && (c & kUCKeyOutputTestForIndexMask) != kUCKeyOutputStateIndexMask) {
+        UInt32 deadKeyState = 0;
+        UniChar chars[4];
+        UniCharCount n = 0;
+        OSStatus err = UCKeyTranslate(m_resource, static_cast<UInt16>(button), kUCKeyActionDown,
+                                      m_tableModifiers[table], m_keyboardType,
+                                      kUCKeyTranslateNoDeadKeysMask, &deadKeyState, 4, &n, chars);
+        if (err != noErr || n != 1) {
+            return kKeyNone;
+        }
+        return IOSXKeyResource::unicharToKeyID(chars[0]);
+    }
 
     KeySequence keys;
     switch (c & kUCKeyOutputTestForIndexMask) {

@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include "inputleap/KeyState.h"
 #include "platform/IOSXKeyResource.h"
 
@@ -53,6 +55,11 @@ private:
     const UCKeyStateRecordsIndex* m_sri;
     const UCKeyStateTerminators* m_st;
     std::uint16_t m_spaceOutput;
+    // keyboardType に合う表が無く既定の表を使うとき（日本語キーボードで ABC/US 配列など）は、
+    // macOS と同じ UCKeyTranslate で文字を求める。既定の表のままだと記号が US の位置になる
+    bool m_useTranslate = false;
+    std::uint32_t m_keyboardType = 0;
+    std::vector<std::uint32_t> m_tableModifiers;  // 表番号 → その表になる修飾キーの組み合わせ
 };
 
 } // namespace inputleap
